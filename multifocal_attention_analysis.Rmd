@@ -1,0 +1,763 @@
+---
+title: "Analyses and Plots for Experiments 1, 2, & 3 in Özkan & Störmer (2024)"
+author: "Mert Özkan"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Load Libraries
+```{r}
+library(tidyverse)
+library(ggplot2)
+options(dplyr.summarise.inform = FALSE)
+setwd("~/Dropbox (Dartmouth College)/DataCollection/multifocal_analys")
+save.path <- "~/Dropbox (Dartmouth College)/Manuscripts/Multifocal Attention/"
+
+f_sep <- .Platform$file.sep
+pwt_cd <- function(df,fml){
+  # pairwise t test and cohen's d
+  t <- rstatix::pairwise_t_test(df, fml, paired=T)
+  d <- rstatix::cohens_d(df, fml, paired=T)
+  t$effsize <- d$effsize
+  t$magnitude <- d$magnitude
+  return(t)
+  
+}
+
+shape_order <- c("Narrow","Broad","Split")
+```
+
+```{r}
+char2num <- function(char){
+  
+  i = 1
+  num = rep(0,length(char))
+  for(charN in unique(char)){
+    
+    isCharN = char==charN
+    num[isCharN] = i
+    i = i + 1
+  }
+  
+  return(as.factor(num))
+}
+
+read.csv('wi_multifocal_raw_groupN30.csv') %>%
+  rename(Focus=Shape) %>%
+  mutate(Focus = replace(Focus, Focus=="Single", "Narrow"),
+         Focus = factor(Focus,levels = shape_order)) %>%
+  filter(!(Participant %in% c("JS","EGT", "NH"))) %>%
+  mutate(Participant = char2num(Participant)) %>%
+  select(c(Participant, Side, Focus, CueLocation, isTarget, Target_Type, ProbeLocation, ExactLocation, Accuracy)) %>%
+  write.csv("./data/clean/exp1_multifocal_clean.csv")
+```
+
+# Experiment 1
+
+1. Load participant data
+
+```{r}
+exp1 <- read.csv('wi_multifocal_raw_groupN30.csv') %>%
+  rename(Focus=Shape) %>%
+  mutate(Focus = replace(Focus, Focus=="Single", "Narrow"),
+         Focus = factor(Focus,levels = shape_order))
+head(exp1)
+```
+2. Find participants with more than 25% of trials discarded due to eye movements
+```{r}
+exp1.overall_accuracy <- exp1 %>%
+  group_by(Participant) %>%
+  dplyr::summarize(proportion_correct = mean(Accuracy),
+                   no_of_trials = length(Accuracy),
+                   pc_trials = 100*no_of_trials/720,
+                   isLessThan75PC = pc_trials < 75
+                       )
+
+exp1.excluded <- c("EGT","NH")
+exp1.overall_accuracy %>%
+  filter(isLessThan75PC)
+```
+
+3. Contrast thresholds: find the outliers
+```{r}
+exp1.sub <- unique(exp1$Participant)
+rawdatapath <- "../multifocal_eyetracker/data/raw/behavioral/"
+rawdatafiles <- Sys.glob(sprintf("%s%smfet_main_bhv*%s_*.csv",rawdatapath,f_sep,exp1.sub))
+
+
+exp1.excluded <- c(exp1.excluded, "JS")
+```
+
+3. Filter out the excluded participants
+
+```{r}
+exp1 <- exp1 %>% filter(!(Participant %in% exp1.excluded))
+n_sub <- length(unique(exp1$Participant))
+```
+27 participants left.
+
+4. Violin plot of accuracies
+
+```{r}
+
+
+exp1.processed <- exp1 %>%
+  mutate(Cue = as.character(Target_Type)) %>%
+  dplyr::group_by(Participant,Focus,Cue) %>%
+  dplyr::summarize(proportion_correct = mean(Accuracy),
+                       no_of_trials = length(Accuracy))
+
+exp1.summary <- exp1.processed %>%
+  Rmisc::summarySEwithin(measurevar = "proportion_correct",
+                withinvars = c("Focus","Cue"),
+                idvar = c("Participant")
+                )
+
+exp1.summary
+
+ggplot(
+  exp1.processed,
+  aes(x = Cue,y=proportion_correct,fill=Cue)) +
+  geom_hline(yintercept = .5) +
+  geom_point(color='grey')+
+  geom_violin(alpha=.5,trim=T,color=NA) +
+  geom_errorbar(data = exp1.summary,
+                aes(ymin=proportion_correct-se,ymax=proportion_correct+se),width=.1) +
+  geom_point(data=exp1.summary) +
+  facet_wrap(~ Focus, scales='free_x') +
+  coord_cartesian(ylim = c(.4,1)) +
+  guides(fill='none') + ylab('Proportion of Correct Responses') +
+  theme(axis.text.x = element_text(angle = 30, vjust = 0.5, hjust=.5))
+```
+## Main ANOVA (Table 1)
+
+1. Reduce cue conditions to two levels
+```{r}
+exp1.aov.df <- exp1 %>%
+  mutate(Cue = as.character(Target_Type)) %>%
+  mutate(Cue = replace(Cue,Cue %in% c("Outer_Uncued","Intermediate_Uncued"),'Uncued')) %>%
+  dplyr::group_by(Participant,Focus,Cue) %>%
+  dplyr::summarize(proportion_correct = mean(Accuracy),
+                       no_of_trials = length(Accuracy)) %>%
+  ungroup() %>% droplevels()
+head(exp1.aov.df)
+```
+2. Two—way ANOVA
+
+```{r}
+exp1.aov <- rstatix::anova_test(data=exp1.aov.df,
+                                  formula = proportion_correct ~ Focus * Cue + Error(Participant/Focus * Cue),
+                                  effect.size = 'pes')
+exp1.aov
+```
+ANOVA results indicate only a significant main effect of Cue condition.
+
+2.1 Bayes Factor Analysis
+
+```{r}
+set.seed(42)
+exp1.bf.aov <- BayesFactor::anovaBF(data= exp1.aov.df%>%
+                       mutate(Participant = factor(Participant),
+                              Cue = factor(Cue),
+                              Focus = factor(Focus)
+                              ),
+                     formula= proportion_correct ~ Focus * Cue+ Participant, whichRandom = 'Participant')
+
+exp1.bf.aov
+```
+BF(Cue) = 8304.2
+
+Adding Focus to the model:
+```{r}
+exp1.bf.aov[3]/exp1.bf.aov[2]
+```
+BF(Focus) = BF(Focus + Cue) / BF(Cue) = .1
+
+Adding the interaction term
+```{r}
+exp1.bf.aov[4]/exp1.bf.aov[3]
+```
+BF(Focus:Cue) = BF(Focus + Cue + Focus:Cue) / BF(Focus + Cue) = 0.31
+
+## Post—Hoc Pairwise T—Tests (Table 2)
+
+1. Pairwise T-Tests
+```{r}
+exp1.processed %>%
+  group_by(Focus) %>%
+  group_modify(~pwt_cd(.,proportion_correct ~ Cue)) %>% ungroup() %>%
+  rstatix::adjust_pvalue(p.col = "p", method="BH")
+  
+```
+2. Bayes Factors associated with post-hoc t-tests
+```{r}
+exp1.pht_bf <- exp1.processed %>%
+  select(-no_of_trials) %>%
+  spread(Cue,proportion_correct)
+
+
+sprintf("Narrow (Cued v Outer Uncued)")
+datN <- exp1.pht_bf %>%
+  filter(Focus == "Narrow") 
+set.seed(46)
+BayesFactor::ttestBF(x = datN$Cued, y=datN$Outer_Uncued, paired = T)
+
+sprintf("Broad (Cued v Outer Uncued)")
+datN <- exp1.pht_bf %>%
+  filter(Focus == "Broad") 
+set.seed(46)
+BayesFactor::ttestBF(x = datN$Cued, y=datN$Outer_Uncued, paired = T)
+
+sprintf("Split (Cued v Outer Uncued)")
+datN <- exp1.pht_bf %>%
+  filter(Focus == "Split") 
+set.seed(46)
+BayesFactor::ttestBF(x = datN$Cued, y=datN$Outer_Uncued, paired = T)
+
+sprintf("Split (Cued v Intermediate Uncued)")
+datN <- exp1.pht_bf %>%
+  filter(Focus == "Split") 
+set.seed(46)
+BayesFactor::ttestBF(x = datN$Intermediate_Uncued, y=datN$Cued, paired = T)
+
+sprintf("Split (Intermediate Uncued v Outer Uncued)")
+datN <- exp1.pht_bf %>%
+  filter(Focus == "Split") 
+set.seed(46)
+BayesFactor::ttestBF(x = datN$Intermediate_Uncued, y=datN$Outer_Uncued, paired = T)
+
+```
+3. Comparing performance at corresponding locations in the broad— and split—focus conditions
+
+```{r}
+exp1.pht.loc <- exp1 %>%
+  # Collapse left and right sides
+  mutate(ExactLocation = replace(ExactLocation, ExactLocation > 90, 
+                                 180 - ExactLocation[ExactLocation > 90])) %>%
+  filter(Focus != "Narrow" &
+           !(ExactLocation %in% c(36, 54))
+           ) %>%
+  group_by(Participant, Focus, ExactLocation,Target_Type) %>%
+  summarise(proportion_correct = mean(Accuracy),
+            no_of_trials = length(Accuracy),
+            ) %>%
+  rename(Cue = Target_Type)
+
+head(exp1.pht.loc)
+
+exp1.pht.loc %>%
+  Rmisc::summarySEwithin(
+    withinvars = c("ExactLocation", "Focus"),
+    measurevar = "proportion_correct",
+    idvar = "Participant"
+  )
+
+```
+```{r}
+exp1.pht.loc %>%
+  group_by(ExactLocation) %>% droplevels() %>%
+  group_modify(~pwt_cd(., proportion_correct ~ Focus)) %>%
+  ungroup() %>%
+  rstatix::adjust_pvalue(p.col = "p", method="BH")
+```
+The intermediate location (ExactLocation = 45) did not differ significantly between focus condition even though it is cued in the broad and uncued in the split condition
+```{r}
+datN <- exp1.pht.loc %>%
+  filter(ExactLocation == 45) %>%
+  select(-c(Cue, no_of_trials)) %>%
+  spread(Focus, proportion_correct)
+
+
+set.seed(46)
+BayesFactor::ttestBF(x = datN$Broad, y=datN$Split, paired = T)
+  
+```
+Bayes factor is above 1, indicating that there is high likelihood of a false negative result.
+
+# Experiment 2
+```{r}
+exp2.bhv = read.csv('./ssvep_exp1_bhv.csv') %>%
+  rename(Focus=Shape,
+         Participant=sub) %>%
+  mutate(Focus = replace(Focus, Focus=="Single", "Narrow"),
+         Focus = factor(Focus,levels = shape_order))
+head(exp2.bhv)
+exp2.snr = read.csv('./ssvep_exp1_snr_N31.csv') %>%
+  rename(Focus=shape,
+         Participant=participant) %>%
+  mutate(Focus = replace(Focus, Focus=="Single1", "Narrow1"),
+         Focus = replace(Focus, Focus=="Single2", "Narrow2"))
+head(exp2.snr)
+
+exp2.stim_freqs = 120/c(9,10,11)
+```
+## Participant rejection
+Only one participant (Sub#) was rejected due to not showing clear peaks in SNR at stimulation frequencies.
+```{r}
+exp2.snr %>%
+  group_by(Participant,frequency) %>%
+  summarise(snr = mean(snr)) %>%
+  group_by(Participant) %>%
+  ggplot(aes(x=frequency,y=snr)) +
+  geom_vline(xintercept = exp2.stim_freqs,color='grey',alpha=.5) +
+  facet_wrap(~Participant)+
+  geom_line(size=.5) +coord_cartesian(xlim = c(8.24,16))
+```
+```{r}
+exp2.exclude <- c("CJT")
+```
+
+
+## Behavioral Data Analysis
+```{r}
+get_rate <- function(detection,isTarget,level){
+  return(
+    (sum(detection==level,na.rm=T)+.5)/(sum(isTarget,na.rm = T,na.rm=T)+1)
+  )
+}
+  
+
+
+exp2.bhv_proc <- exp2.bhv %>% 
+  filter(!Participant %in% exp2.exclude) %>%
+  filter(isProbe=='True') %>%
+  group_by(Participant,Focus) %>%
+  summarise(
+    'Hit_Rate' = get_rate(detection,isTarget,'Hit'),
+    'FA_Rate' = get_rate(detection,isTarget,'FA'),
+  ) %>%
+  mutate(dprime = qnorm(Hit_Rate) - qnorm(FA_Rate)
+         ) %>%
+  select(c('Participant','Focus',"dprime")) %>%
+  droplevels()
+
+head(exp2.bhv_proc)
+
+
+
+exp2.bhv_summ <- exp2.bhv_proc %>%
+  droplevels() %>%
+  Rmisc::summarySEwithin(
+        measurevar = 'dprime',
+        idvar = 'Participant',
+        withinvars = 'Focus'
+      )
+head(exp2.bhv_summ)
+
+
+ggplot(mapping = aes(x = Focus, y=dprime, fill=Focus)) +
+  geom_point(data = exp2.bhv_proc,color='grey')+
+  geom_violin(data=exp2.bhv_proc, alpha=.5,trim=T,color=NA) +
+  geom_errorbar(data=exp2.bhv_summ, aes(ymin=dprime-se,ymax=dprime+se),width=.1)+
+  geom_point(data=exp2.bhv_summ) +
+  guides(fill='none') + ylab('dprime') + coord_cartesian(ylim= c(0,5)) 
+```
+1. One-way ANOVA results
+```{r}
+exp2.bhv_proc %>% ungroup() %>%
+  rstatix::anova_test(dv = "dprime", within = "Focus", wid = "Participant", effect.size = "pes")
+```
+2. Bayes Factor analysis on the ANOVA results
+```{r}
+set.seed(42)
+exp2.bhv.bf.aov <- BayesFactor::anovaBF(data= exp2.bhv_proc%>%
+                       mutate(Participant = factor(Participant),
+                              Focus = factor(Focus)
+                              ),
+                     formula= dprime ~ Focus + Participant, whichRandom = 'Participant')
+
+exp2.bhv.bf.aov
+```
+3. Post—Hoc T—Tests
+```{r}
+exp2.bhv_proc %>% ungroup() %>%
+  pwt_cd(dprime ~ Focus)
+```
+4. Bayes Factors on Post—Hoc T—tests
+```{r}
+exp2.bhv.pht_bf <- exp2.bhv_proc %>%
+  spread(Focus,dprime)
+
+
+sprintf("Narrow v Broad")
+set.seed(46)
+BayesFactor::ttestBF(x = exp2.bhv.pht_bf$Narrow, y=exp2.bhv.pht_bf$Broad, paired = T)
+
+sprintf("Narrow v Split")
+set.seed(46)
+BayesFactor::ttestBF(x = exp2.bhv.pht_bf$Narrow, y=exp2.bhv.pht_bf$Split, paired = T)
+
+sprintf("Split v Broad")
+set.seed(46)
+BayesFactor::ttestBF(x = exp2.bhv.pht_bf$Split, y=exp2.bhv.pht_bf$Broad, paired = T)
+```
+## SSVEP Results
+1. Process data
+```{r}
+find_local_max <- function(df,foi,n_search_bin = 2){
+  
+  fq <- c()
+  snr <- c()
+  lbl <- c()
+  
+  for(whFoi in 1:length(foi)){
+  
+    foiN = foi[whFoi]
+    search_idx <- which.min(abs(df$frequency-foiN)) + -n_search_bin:n_search_bin
+    max_idx <- search_idx[which.max(df$snr[search_idx])]
+    fq <- rbind(fq,df$frequency[max_idx])
+    snr <- rbind(snr,df$snr[max_idx])
+    lbl <- rbind(lbl,round(foiN)) #rbind(lbl,sprintf("%d",round(foi[whFoi])))
+      
+  }
+  
+  return(data.frame(frequency=lbl,exact_frequency=fq,snr) %>% ungroup())
+  
+}
+
+exp2.get_ai <- function(df){
+  
+  new_df <- c()
+  for(foiN in unique(df$frequency)){
+    
+    if(foiN == 12){
+        
+        comparison_cond = "Narrow1"
+        
+        
+      }else{
+        
+        comparison_cond = "Narrow2"
+        
+      }
+    
+      new_df <- rbind(new_df,
+                    df %>%
+                      filter(frequency == foiN) %>%
+                      mutate(ai = snr/((snr+snr[Focus == comparison_cond])/2)) %>%
+                      filter(Focus != comparison_cond) %>%
+                      mutate(Focus = as.character(Focus),
+                             Focus = factor(
+                        replace(Focus, Focus %in% c("Narrow1","Narrow2"),"Narrow")))
+      )
+                    
+  }
+  return(new_df)
+}
+
+
+exp2.ai <- exp2.snr %>%
+  filter(!(Participant %in% exp2.exclude)) %>%
+  group_by(Participant,Focus) %>%
+  group_modify(~find_local_max(.,foi = exp2.stim_freqs)) %>%
+  ungroup() %>%
+  group_by(Participant) %>%
+  group_modify(~ exp2.get_ai(.))%>%
+  mutate(shape = factor(Focus,levels = c('Narrow','Split','Broad'))) %>%
+  filter(frequency != 13)
+
+head(exp2.ai)
+
+
+exp2.ai.summary <- exp2.ai %>%
+  droplevels() %>%
+  Rmisc::summarySEwithin(
+        measurevar = 'ai',
+        idvar = 'Participant',
+        withinvars = c('Focus',"frequency")
+      )
+head(exp2.ai.summary)
+
+
+```
+2. T—tests to determine whether there were successful attentional modulations
+```{r}
+exp2.ai %>%
+  group_by(Focus, frequency) %>%
+  rstatix::t_test(ai ~ 1, alternative = "greater", mu=1) %>%
+  rstatix::add_significance()
+```
+
+3. Two—way ANOVA Results
+```{r}
+exp2.ai %>% ungroup() %>%
+  rstatix::anova_test(dv = "ai", within = c("Focus","frequency"), wid = "Participant", effect.size = "pes")
+```
+4. Bayes Factor on ANOVA
+```{r}
+set.seed(42)
+exp2.ai.bf.aov <- BayesFactor::anovaBF(data= exp2.ai%>%
+                       mutate(Participant = factor(Participant),
+                              Focus = factor(Focus),
+                              frequency = factor(frequency)
+                              ) %>% ungroup(),
+                     formula= ai ~ Focus * frequency + Participant, whichRandom = 'Participant')
+
+exp2.ai.bf.aov
+```
+BF for "frequency"
+```{r}
+exp2.ai.bf.aov[3]/exp2.ai.bf.aov[1]
+```
+BF for "interaction"
+```{r}
+exp2.ai.bf.aov[4]/exp2.ai.bf.aov[3]
+```
+5. PostHoc T—tests
+```{r}
+exp2.ai %>% ungroup() %>%
+  group_by(Participant, Focus) %>%
+  summarise(ai = mean(ai)) %>%
+  ungroup() %>%
+  pwt_cd(ai ~ Focus)
+```
+6. Bayes Factors on Post—Hoc T—tests
+```{r}
+exp2.ai.pht_bf <- exp2.ai %>% ungroup() %>%
+  group_by(Participant, Focus) %>%
+  summarise(ai = mean(ai)) %>%
+  spread(Focus,ai)
+
+
+sprintf("Narrow v Broad")
+set.seed(46)
+BayesFactor::ttestBF(x = exp2.ai.pht_bf$Narrow, y=exp2.ai.pht_bf$Broad, paired = T)
+
+sprintf("Narrow v Split")
+set.seed(46)
+BayesFactor::ttestBF(x = exp2.ai.pht_bf$Narrow, y=exp2.ai.pht_bf$Split, paired = T)
+
+sprintf("Split v Broad")
+set.seed(46)
+BayesFactor::ttestBF(x = exp2.ai.pht_bf$Split, y=exp2.ai.pht_bf$Broad, paired = T)
+```
+# Experiment 3
+```{r}
+exp3.bhv = read.csv('./ssvep_exp2_bhv_N24.csv') %>%
+  rename(Focus=Shape) %>%
+  mutate(Focus = replace(Focus, Focus=="S", "Split"),
+         Focus = replace(Focus, Focus=="B", "Broad"))
+head(exp3.bhv)
+exp3.snr = read.csv('./ssvep_exp2_snr_N24.csv') %>%
+  rename(Focus=shape,
+         Participant=participant)
+head(exp3.snr)
+
+exp3.stim_freqs =  120/c(9,10,11,13,15,17)
+```
+## Behavioral Results
+1. Process data, summarize, and plot
+```{r}
+get_summary <- function(df){
+  return(
+    df %>%
+      Rmisc::summarySEwithin(
+        measurevar = 'value',
+        idvar = 'Participant',
+        withinvars = 'Focus',na.rm = T
+      )
+  )
+}
+
+get_rate.exp3 <- function(Response,EventType,var,resp){
+  return(
+    (sum(Response %in% resp)+.5)/(sum(EventType %in% var)+1)
+  )
+}
+
+exp3.bhv_proc <-exp3.bhv %>%
+  group_by(Participant,Focus) %>%
+  summarise(
+    'Hit Rate' = get_rate.exp3(Response,EventType,'TAR','HIT'),
+    'False Alarm Rate (Similar)' = get_rate.exp3(Response,EventType,'DIS','SFA'),
+            ) %>%
+  reshape2::melt(id=c('Participant','Focus')) %>%
+  rename(metric=variable) %>%
+  mutate(thresholded = T) %>%
+  mutate(thresholded = replace(thresholded, Participant %in% c(1,2,3,7),F)) %>%
+  filter(Focus %in% c("Broad", "Split"))
+
+exp3.bhv.summary <- exp3.bhv_proc %>%
+  group_by(metric) %>%
+  group_modify(~get_summary(.))
+exp3.bhv.summary
+```
+```{r}
+ggplot(
+  exp3.bhv.summary,
+  aes(x = Focus,y=value,fill=Focus)) +
+  geom_point(data = exp3.bhv_proc,color='grey')+
+  geom_violin(data = exp3.bhv_proc,alpha=.5,trim=T,color=NA) +
+  geom_errorbar(aes(ymin=value-se,ymax=value+se),width=.1)+ geom_point() +
+  facet_wrap(~ metric) +
+  guides(fill='none') + ylab('Proportion of Positive Response') + coord_cartesian(ylim = c(0,1))
+```
+2. T-Test on Hits and FAs
+```{r}
+exp3.bhv_proc %>%
+  group_by(metric) %>%
+  pwt_cd(value ~ Focus) %>%
+  rstatix::adjust_pvalue(p.col="p")
+```
+3. Bayes Factor Analysis on the *t*—tests
+```{r}
+exp3.bhv.pht_bf <- exp3.bhv_proc %>% ungroup() %>%
+  mutate(Focus = interaction(Focus,metric)) %>%
+  select(Participant, Focus, value) %>%
+  spread(Focus,value)
+exp3.bhv.pht_bf
+
+sprintf("Hit Rate")
+set.seed(46)
+BayesFactor::ttestBF(x = exp3.bhv.pht_bf$`Broad.Hit Rate`, y=exp3.bhv.pht_bf$`Split.Hit Rate`, paired = T)
+
+
+sprintf("False Alarm Rate")
+set.seed(46)
+BayesFactor::ttestBF(x = exp3.bhv.pht_bf$`Broad.False Alarm Rate (Similar)`, y=exp3.bhv.pht_bf$`Split.False Alarm Rate (Similar)`, paired = T)
+```
+## Thresholding
+
+## SSVEP Results
+
+1. Process data, summary statistics and plot
+```{r}
+get_ai.exp3 <- function(snr,frequency,AttendedFrequency){
+  
+  nominator = 'Low'
+  denominator = 'High'
+  
+  if(frequency[1] > 10){
+    
+    nominator = 'High'
+    denominator = 'Low'
+    
+  }
+  isNom <- AttendedFrequency==nominator
+  isDnom <- AttendedFrequency==denominator
+  x <-snr[isNom]/((snr[isDnom]+snr[isNom])/2)
+
+  return(mean(x))
+}
+
+exp3.ai <- exp3.snr %>%
+  filter(frequency<20) %>%
+  separate(Focus,c('HighFreqSide','CueSide','Focus')) %>%
+  mutate(AttendedFrequency = 'High') %>%
+  mutate(AttendedFrequency = replace(AttendedFrequency,
+                                     (HighFreqSide=='HL' & CueSide =='CR') |
+                                       (HighFreqSide=='HR' & CueSide =='CL'),
+                                     'Low')
+         ) %>%
+  group_by(Participant,AttendedFrequency,Focus) %>%
+  group_modify(~ find_local_max(.,foi = exp3.stim_freqs)) %>%
+  dplyr::group_by(Participant,Focus,frequency) %>%
+  dplyr::summarize(ai = get_ai.exp3(snr,frequency,AttendedFrequency)) %>%
+  mutate(AttendedFrequency =  'High') %>%
+  mutate(AttendedFrequency =  replace(AttendedFrequency, frequency < 10, 'Low')) %>%
+  mutate(frequency= as.numeric(as.character(frequency))) %>%
+  group_by(Participant,Focus) %>%
+  mutate(Location = 'OuterMost') %>%
+  mutate(Location = replace(Location, frequency == 11 | frequency == 9, 'InnerMost')) %>%
+  mutate(Location = replace(Location, frequency == 12 | frequency == 8, 'Intermediate')) %>%
+  group_by(Participant,Focus,Location) %>%
+  summarize(ai = mean(ai))
+
+exp3.ai.summary <- exp3.ai %>%
+  Rmisc::summarySEwithin(
+    measurevar = 'ai',
+    withinvars = c('Location','Focus'),
+    idvar = 'Participant'
+  )
+
+sub_datN <- exp3.ai
+summ_datN <- exp3.ai.summary
+ggplot(
+  summ_datN,
+  aes(x = Location,y=ai,fill=Location)) +
+  geom_hline(yintercept = 1) +
+  geom_point(data = sub_datN,aes(x=Location),color='grey')+
+  geom_violin(data = sub_datN, aes(x=Location), alpha=.5,trim=T,color=NA) +
+  geom_errorbar(aes(ymin=ai-se,ymax=ai+se),width=.1)+ geom_point() +
+  facet_wrap(~ Focus) +
+  coord_cartesian(ylim = c(.4,2.25)) +
+  guides(fill='none') + ylab('Attention Index')
+
+head(exp3.ai.summary)
+```
+2. Series of T—tests per location to test whether the AI are above baseline of 1
+```{r}
+exp3.ai %>%
+  group_by(Focus, Location) %>%
+  rstatix::t_test(ai ~ 1, alternative = "greater") %>%
+  rstatix::adjust_pvalue(p.col="p")
+```
+3. ANOVA test
+```{r}
+exp3.ai %>% ungroup() %>%
+  rstatix::anova_test(dv = 'ai', wid = 'Participant', within = c("Focus","Location"), effect.size = "pes")
+```
+4. Bayes Factor Analysis on ANOVA
+```{r}
+set.seed(42)
+exp3.ai.bf.aov <- BayesFactor::anovaBF(data= exp3.ai%>%
+                       mutate(Participant = factor(Participant),
+                              Focus = factor(Focus),
+                              Location = factor(Location)
+                              ) %>% ungroup(),
+                     formula= ai ~ Focus * Location + Participant, whichRandom = 'Participant')
+
+exp3.ai.bf.aov
+```
+BF for "Focus"
+```{r}
+exp3.ai.bf.aov[3]/exp3.ai.bf.aov[2]
+```
+BF for "Interaction"
+```{r}
+exp3.ai.bf.aov[4]/exp3.ai.bf.aov[3]
+```
+5. Post—Hoc T—Tests
+```{r}
+exp3.ai %>%
+  group_by(Participant, Location) %>%
+  summarise(ai = mean(ai)) %>% ungroup() %>%
+  pwt_cd(ai ~ Location)
+```
+6. Bayes Factor Analysis on T—tests
+
+```{r}
+exp3.ai.pht_bf <- exp3.ai %>%
+  group_by(Participant, Location) %>%
+  summarise(ai = mean(ai)) %>% ungroup() %>%
+  select(Participant, Location, ai) %>%
+  spread(Location,ai)
+exp3.ai.pht_bf
+
+sprintf("Intermediate v Innermost")
+set.seed(46)
+BayesFactor::ttestBF(x = exp3.ai.pht_bf$InnerMost, y=exp3.ai.pht_bf$Intermediate, paired = T)
+
+sprintf("Outermost v Innermost")
+set.seed(46)
+BayesFactor::ttestBF(x = exp3.ai.pht_bf$InnerMost, y=exp3.ai.pht_bf$OuterMost, paired = T)
+
+sprintf("Intermediate v Outermost")
+set.seed(46)
+BayesFactor::ttestBF(x = exp3.ai.pht_bf$OuterMost, y=exp3.ai.pht_bf$Intermediate, paired = T)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
